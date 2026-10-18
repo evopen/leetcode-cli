@@ -44,3 +44,36 @@ export LEETCODE_SITE='leetcode.com'   # or 'leetcode.cn'
 ## leetcode.com vs leetcode.cn
 
 `site` accepts exactly two values: `leetcode.com` or `leetcode.cn` (anything else is rejected). Choosing `leetcode.cn` switches every API endpoint to the China site — set it via the config field or `LEETCODE_SITE`.
+
+## Cloudflare challenges
+
+The client enables HTTP/2 negotiation. Debug logging (`--debug`) reports the
+negotiated protocol and response status, without logging cookie values.
+
+When Chrome can run a solution but the CLI receives a Cloudflare challenge, set
+`user_agent` under `[cookies]` in `~/.leetcode/leetcode.toml` to the exact
+User-Agent from Chrome's successful request (DevTools → Network → Request Headers).
+
+```toml
+# Add these to the existing [cookies] section:
+user_agent = 'Mozilla/5.0 (...)' # Replace with your browser's complete User-Agent
+cf_clearance = ''
+```
+
+With automatic Chrome login cookies, `cf_clearance` is also read from Chrome when
+available. A nonempty configured clearance overrides the Chrome value. With
+manual login cookies, copy `cf_clearance` from the same browser into the config.
+If Chrome has no clearance cookie, no clearance is sent.
+
+Environment variables override the corresponding config fields:
+
+```sh
+export LEETCODE_USER_AGENT='<your-browser-user-agent>'
+export LEETCODE_CF_CLEARANCE='<your-browser-cf_clearance>'
+```
+
+Use the same network connection as Chrome. Clearance expires and is tied to the
+browser's identity; copying it and its User-Agent does not guarantee that an HTTP
+client will be accepted. If challenged again, check the site in Chrome and refresh
+the clearance. The CLI reports a Cloudflare-specific error rather than parsing the
+challenge HTML as JSON.

@@ -41,6 +41,10 @@ pub struct Cookies {
     pub csrf: String,
     pub session: String,
     pub site: LeetcodeSite,
+    #[serde(default)]
+    pub cf_clearance: String,
+    #[serde(default)]
+    pub user_agent: String,
 }
 
 impl Default for Cookies {
@@ -49,6 +53,8 @@ impl Default for Cookies {
             csrf: "".to_string(),
             session: "".to_string(),
             site: LeetcodeSite::LeetcodeCom,
+            cf_clearance: String::new(),
+            user_agent: String::new(),
         }
     }
 }
@@ -59,7 +65,11 @@ impl Display for Cookies {
             f,
             "LEETCODE_SESSION={};csrftoken={};",
             self.session, self.csrf
-        )
+        )?;
+        if !self.cf_clearance.is_empty() {
+            write!(f, "cf_clearance={};", self.cf_clearance)?;
+        }
+        Ok(())
     }
 }
 
@@ -82,6 +92,12 @@ impl Cookies {
             && let Ok(leetcode_site) = LeetcodeSite::from_str(&site)
         {
             self.site = leetcode_site;
+        }
+        if let Ok(value) = std::env::var("LEETCODE_CF_CLEARANCE") {
+            self.cf_clearance = value;
+        }
+        if let Ok(value) = std::env::var("LEETCODE_USER_AGENT") {
+            self.user_agent = value;
         }
         self
     }

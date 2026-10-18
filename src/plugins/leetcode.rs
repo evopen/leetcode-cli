@@ -48,10 +48,13 @@ impl LeetCode {
             ],
         )?;
 
-        let client = ClientBuilder::new()
+        let mut builder = ClientBuilder::new()
             .gzip(true)
-            .connect_timeout(Duration::from_secs(30))
-            .build()?;
+            .connect_timeout(Duration::from_secs(30));
+        if !conf.cookies.user_agent.is_empty() {
+            builder = builder.user_agent(&conf.cookies.user_agent);
+        }
+        let client = builder.build()?;
 
         Ok(LeetCode {
             conf,
@@ -317,7 +320,89 @@ mod req {
                 Mode::Post => client.post(&self.url).json(&self.json),
             };
 
-            Ok(req.headers(headers).send().await?)
+            let response = req.headers(headers).send().await?;
+            debug!(
+                "Response protocol: {:?}, status: {}",
+                response.version(),
+                response.status()
+            );
+            if response
+                .headers()
+                .get("cf-mitigated")
+                .is_some_and(|v| v == "challenge")
+            {
+                return Err(anyhow::anyhow!(
+                    "Cloudflare challenge blocked {} (HTTP {}). Open LeetCode in Chrome, complete any verification, and configure the matching cookies.user_agent and cf_clearance (automatically read with Chrome login cookies). Use the same network connection as Chrome. Clearance reuse is not guaranteed.",
+                    self.name, response.status()
+                ).into());
+            }
+            Ok(response)
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::TcpListener,
+        };
+
+        #[tokio::test]
+        async fn sends_browser_headers_and_detects_challenges() {
+            for challenged in [false, true] {
+                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let url = format!("http://{}", listener.local_addr().unwrap());
+                let server = tokio::spawn(async move {
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    let mut request = Vec::new();
+                    loop {
+                        let mut buffer = [0; 1024];
+                        let count = socket.read(&mut buffer).await.unwrap();
+                        assert!(count > 0);
+                        request.extend_from_slice(&buffer[..count]);
+                        if request.windows(4).any(|v| v == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    let request = String::from_utf8(request).unwrap().to_lowercase();
+                    assert!(request.contains("user-agent: test-browser"));
+                    assert!(request.contains("cookie: cf_clearance=test-clearance;"));
+                    let response = if challenged {
+                        "HTTP/1.1 403 Forbidden\r\ncf-mitigated: challenge\r\nContent-Length: 4\r\nConnection: close\r\n\r\nhtml"
+                    } else {
+                        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"
+                    };
+                    socket.write_all(response.as_bytes()).await.unwrap();
+                });
+                let client = Client::builder()
+                    .timeout(std::time::Duration::from_secs(5))
+                    .no_proxy()
+                    .user_agent("test-browser")
+                    .build()
+                    .unwrap();
+                let mut headers = HeaderMap::new();
+                headers.insert("Cookie", "cf_clearance=test-clearance;".parse().unwrap());
+                let result = Req {
+                    default_headers: headers,
+                    refer: None,
+                    json: None,
+                    info: false,
+                    mode: Mode::Get,
+                    name: "test",
+                    url,
+                }
+                .send(&client)
+                .await;
+                if challenged {
+                    let error = format!("{:?}", result.unwrap_err());
+                    assert!(error.contains("Cloudflare challenge"));
+                    assert!(!error.contains("html"));
+                } else {
+                    assert_eq!(result.unwrap().text().await.unwrap(), "{}");
+                }
+                server.await.unwrap();
+            }
         }
     }
 }

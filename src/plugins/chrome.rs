@@ -1,7 +1,7 @@
 //! Read and decrypt LeetCode cookies straight from Chrome's cookie store.
 //!
-//! Replaces the archived `rookie` crate. leetcode-cli only needs two cookies
-//! (`LEETCODE_SESSION`, `csrftoken`) from one browser, so this reuses the SQLite
+//! Replaces the archived `rookie` crate. leetcode-cli reads login and clearance cookies
+//! (`LEETCODE_SESSION`, `csrftoken`, `cf_clearance`) from one browser, so this reuses the SQLite
 //! stack already pulled in by `diesel` to read the cookie DB and implements just
 //! Chrome's value decryption — no second SQLite client and no dbus linkage.
 use crate::{Error, Result};
@@ -16,6 +16,7 @@ type Aes128CbcDec = cbc::Decryptor<aes::Aes128>;
 pub struct Ident {
     pub csrf: String,
     session: String,
+    cf_clearance: String,
 }
 
 impl Display for Ident {
@@ -24,7 +25,11 @@ impl Display for Ident {
             f,
             "LEETCODE_SESSION={};csrftoken={};",
             self.session, self.csrf
-        )
+        )?;
+        if !self.cf_clearance.is_empty() {
+            write!(f, "cf_clearance={};", self.cf_clearance)?;
+        }
+        Ok(())
     }
 }
 
@@ -35,11 +40,26 @@ pub fn cookies() -> Result<Ident> {
         return Ok(Ident {
             csrf: ccfg.csrf,
             session: ccfg.session,
+            cf_clearance: ccfg.cf_clearance,
         });
     }
 
     let jar = chrome_cookies(&ccfg.site.to_string())?;
+    debug!(
+        "Cloudflare clearance available: {} (source: {})",
+        !ccfg.cf_clearance.is_empty() || jar.get("cf_clearance").is_some_and(|v| !v.is_empty()),
+        if ccfg.cf_clearance.is_empty() {
+            "Chrome"
+        } else {
+            "configuration"
+        }
+    );
     Ok(Ident {
+        cf_clearance: if ccfg.cf_clearance.is_empty() {
+            jar.get("cf_clearance").cloned().unwrap_or_default()
+        } else {
+            ccfg.cf_clearance
+        },
         csrf: jar
             .get("csrftoken")
             .ok_or(Error::ChromeNotLogin)?
@@ -79,8 +99,10 @@ fn chrome_cookies(domain: &str) -> Result<HashMap<String, String>> {
     let key = encryption_key()?;
     let mut jar = HashMap::new();
     for row in rows {
-        if (row.name == "csrftoken" || row.name == "LEETCODE_SESSION")
-            && let Ok(value) = decrypt(&row.encrypted_value, &key)
+        if matches!(
+            row.name.as_str(),
+            "csrftoken" | "LEETCODE_SESSION" | "cf_clearance"
+        ) && let Ok(value) = decrypt(&row.encrypted_value, &key)
         {
             jar.insert(row.name, value);
         }
